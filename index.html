@@ -13,6 +13,19 @@
         body {
             font-family: 'Inter', sans-serif;
         }
+
+        .filter-btn {
+            background-color: #4B5563;
+            /* gray-600 */
+            color: white;
+            transition: background-color 0.3s;
+        }
+
+        .filter-btn.active-filter {
+            background-color: #3B82F6;
+            /* blue-500 */
+            font-weight: bold;
+        }
     </style>
 </head>
 
@@ -40,6 +53,15 @@
 
         <p id="status-message" class="text-center text-yellow-400 mb-6">Por favor, introduce tu API key para comenzar el
             seguimiento.</p>
+
+        <!-- Filtros de Rango de Tiempo -->
+        <div id="filter-controls" class="flex justify-center gap-2 md:gap-4 my-4 flex-wrap">
+            <button data-filter="day" class="filter-btn py-2 px-4 rounded-md">Hoy</button>
+            <button data-filter="week" class="filter-btn py-2 px-4 rounded-md">Semana</button>
+            <button data-filter="month" class="filter-btn py-2 px-4 rounded-md">Mes</button>
+            <button data-filter="all" class="filter-btn py-2 px-4 rounded-md active-filter">Todo</button>
+        </div>
+
         <!-- Controles de Importación/Exportación -->
         <div id="data-controls" class="flex justify-center gap-4 my-4">
             <button id="import-button"
@@ -72,14 +94,13 @@
             const importButton = document.getElementById('import-button');
             const exportButton = document.getElementById('export-button');
             const fileImporter = document.getElementById('file-importer');
-
-
-
+            const filterControls = document.getElementById('filter-controls');
 
             let priceChart;
             let apiKey = '';
             let fetchInterval;
-            let history = { timestamps: [], prices: [] };
+            let fullHistory = { timestamps: [], prices: [] }; // Renombrado para claridad
+            let currentFilter = 'all';
 
             const net = new brain.recurrent.LSTMTimeStep({
                 inputSize: 1,
@@ -90,37 +111,22 @@
             let minPrice = 0, maxPrice = 1;
 
             const saveDataToLocalStorage = () => {
-                console.log("Guardando datos en localStorage...");
-                try {
-                    const dataToStore = { apiKey: apiKey, history: history };
-                    localStorage.setItem('ethPriceTrackerData', JSON.stringify(dataToStore));
-                    console.log("Datos guardados exitosamente.");
-                } catch (error) {
-                    console.error("Error al guardar en localStorage:", error);
-                }
+                const dataToStore = { apiKey: apiKey, history: fullHistory };
+                localStorage.setItem('ethPriceTrackerData', JSON.stringify(dataToStore));
             };
 
             const loadDataFromLocalStorage = () => {
-                console.log("Intentando cargar datos desde localStorage...");
                 const storedData = localStorage.getItem('ethPriceTrackerData');
                 if (storedData) {
-                    console.log("String de localStorage encontrado:", storedData);
                     try {
                         const parsedData = JSON.parse(storedData);
-                        console.log("Datos parseados de localStorage:", parsedData);
-
                         if (parsedData.apiKey && parsedData.history && parsedData.history.prices.length > 0) {
                             apiKey = parsedData.apiKey;
-                            history = parsedData.history;
-                            console.log("Datos válidos encontrados. Cargando en la gráfica.");
+                            fullHistory = parsedData.history;
                             document.getElementById('api-setup').style.display = 'none';
                             statusMessage.textContent = 'Cargando datos de la sesión anterior...';
 
-                            priceChart.data.labels = history.timestamps.map(ts => new Date(ts * 1000).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }));
-                            priceChart.data.datasets[0].data = history.prices;
-
-                            trainNeuralNetwork(); // Entrenar con los datos cargados
-                            priceChart.update();
+                            renderChart(); // Renderiza con el filtro por defecto ('all')
 
                             fetchPrice();
                             fetchInterval = setInterval(fetchPrice, 120000);
@@ -128,15 +134,14 @@
                         }
                     } catch (error) {
                         console.error("Error al parsear JSON de localStorage:", error);
+                        localStorage.removeItem('ethPriceTrackerData');
                         return false;
                     }
                 }
-                console.log("No se encontraron datos válidos en localStorage.");
                 return false;
             };
 
             const initializeChart = () => {
-                console.log("Inicializando la gráfica.");
                 priceChart = new Chart(ctx, {
                     type: 'line',
                     data: {
@@ -193,82 +198,119 @@
                 });
             };
 
-            const predictNextPrice = () => {
-                if (!isNetTrained || history.prices.length < 5) return null;
-                const lastPricesNormalized = history.prices.slice(-5).map(p => (p - minPrice) / (maxPrice - minPrice));
+            const predictNextPrice = (filteredHistory) => {
+                if (!isNetTrained || filteredHistory.prices.length < 5) return null;
+                const lastTimestamp = filteredHistory.timestamps[filteredHistory.timestamps.length - 1];
+                let predictionTimestamp;
+
+                switch (currentFilter) {
+                    case 'day':
+                        predictionTimestamp = lastTimestamp + 86400; // 1 día
+                        break;
+                    case 'week':
+                        predictionTimestamp = lastTimestamp + 604800; // 7 días
+                        break;
+                    case 'month':
+                        predictionTimestamp = lastTimestamp + 2592000; // 30 días
+                        break;
+                    case 'all':
+                    default:
+                        predictionTimestamp = lastTimestamp + 120; // 2 minutos
+                }
+
+                const lastPricesNormalized = filteredHistory.prices.slice(-5).map(p => (p - minPrice) / (maxPrice - minPrice));
                 const predictedNormalized = net.run(lastPricesNormalized);
                 const predictedPrice = predictedNormalized * (maxPrice - minPrice) + minPrice;
-                const lastTimestamp = history.timestamps[history.timestamps.length - 1];
-                return { timestamp: lastTimestamp + 120, price: predictedPrice };
+                return { timestamp: predictionTimestamp, price: predictedPrice };
             };
 
-            const trainNeuralNetwork = () => {
-                console.log("Iniciando trainNeuralNetwork().");
-                const numDataPoints = history.prices.length;
+            const trainNeuralNetwork = (trainingHistory) => {
+                const numDataPoints = trainingHistory.prices.length;
                 if (numDataPoints < 10) {
-                    console.log(`No hay suficientes datos para entrenar (${numDataPoints}/10).`);
-                    statusMessage.textContent = `Necesitamos más datos para entrenar la red (${numDataPoints}/10).`;
+                    statusMessage.textContent = `Necesitamos más datos en este rango para entrenar (${numDataPoints}/10).`;
+                    isNetTrained = false;
                     return;
                 }
                 statusMessage.textContent = 'Entrenando red neuronal...';
-                console.log("Entrenando red...");
-                minPrice = Math.min(...history.prices);
-                maxPrice = Math.max(...history.prices);
+                minPrice = Math.min(...trainingHistory.prices);
+                maxPrice = Math.max(...trainingHistory.prices);
                 if (maxPrice === minPrice) maxPrice = minPrice + 1;
-                console.log(`Normalizando datos. Min: ${minPrice}, Max: ${maxPrice}`);
-                const normalizedData = history.prices.map(p => (p - minPrice) / (maxPrice - minPrice));
+                const normalizedData = trainingHistory.prices.map(p => (p - minPrice) / (maxPrice - minPrice));
                 net.train([normalizedData], { iterations: 100, log: false, errorThresh: 0.05 });
                 isNetTrained = true;
-                console.log("Entrenamiento finalizado.");
                 statusMessage.textContent = 'Red entrenada. Realizando predicción.';
-                redrawPrediction();
-            }
+            };
 
-            const redrawPrediction = () => {
-                console.log("Redibujando la predicción.");
-                priceChart.data.datasets[1].data = new Array(history.prices.length).fill(NaN);
-                const prediction = predictNextPrice();
+            const getFilteredHistory = () => {
+                if (currentFilter === 'all') {
+                    return fullHistory;
+                }
+                const now = new Date();
+                let startTime;
+                switch (currentFilter) {
+                    case 'day':
+                        startTime = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                        break;
+                    case 'week':
+                        const firstDayOfWeek = now.getDate() - now.getDay();
+                        startTime = new Date(now.getFullYear(), now.getMonth(), firstDayOfWeek).getTime();
+                        break;
+                    case 'month':
+                        startTime = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+                        break;
+                }
+                startTime = startTime / 1000;
+
+                const filteredTimestamps = [];
+                const filteredPrices = [];
+                fullHistory.timestamps.forEach((ts, index) => {
+                    if (ts >= startTime) {
+                        filteredTimestamps.push(ts);
+                        filteredPrices.push(fullHistory.prices[index]);
+                    }
+                });
+                return { timestamps: filteredTimestamps, prices: filteredPrices };
+            };
+
+            const renderChart = () => {
+                const filteredHistory = getFilteredHistory();
+                trainNeuralNetwork(filteredHistory);
+
+                priceChart.data.labels = filteredHistory.timestamps.map(ts => new Date(ts * 1000).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }));
+                priceChart.data.datasets[0].data = filteredHistory.prices;
+
+                priceChart.data.datasets[1].data = new Array(filteredHistory.prices.length).fill(NaN);
+                const prediction = predictNextPrice(filteredHistory);
+
                 if (prediction) {
                     const predictionDate = new Date(prediction.timestamp * 1000);
-                    const predictionLabel = predictionDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+                    const predictionLabel = (currentFilter === 'all')
+                        ? predictionDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })
+                        : predictionDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
 
-                    const lastLabel = priceChart.data.labels[priceChart.data.labels.length - 1];
-                    if (lastLabel !== predictionLabel) {
-                        // Evita añadir una etiqueta extra si no es necesaria, pero prepara el espacio
-                        priceChart.data.labels[history.prices.length] = predictionLabel;
-                    }
-
-                    priceChart.data.datasets[1].data[history.prices.length] = prediction.price.toFixed(2);
+                    priceChart.data.labels[filteredHistory.prices.length] = predictionLabel;
+                    priceChart.data.datasets[1].data[filteredHistory.prices.length] = prediction.price.toFixed(2);
                 }
+
+                priceChart.update();
             };
 
             const updateChart = (newTimestamp, newPrice, saveData = true) => {
-                console.log(`updateChart llamado con: timestamp=${newTimestamp}, price=${newPrice}`);
+                if (!fullHistory.timestamps.includes(newTimestamp)) {
+                    fullHistory.timestamps.push(newTimestamp);
+                    fullHistory.prices.push(newPrice);
 
-                // **FIX: Lógica centralizada para evitar desincronización**
-                // 1. Solo actualizar si el timestamp es nuevo
-                if (!history.timestamps.includes(newTimestamp)) {
-                    console.log("Añadiendo nuevo dato al historial.");
-                    history.timestamps.push(newTimestamp);
-                    history.prices.push(newPrice);
-
-                    // 2. Hacer que la gráfica refleje el historial
-                    priceChart.data.labels = history.timestamps.map(ts => new Date(ts * 1000).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }));
-                    priceChart.data.datasets[0].data = history.prices;
-
-                    // 3. Re-entrenar la red si es necesario
-                    if (history.prices.length % 5 === 0) {
-                        console.log("Condición para re-entrenamiento cumplida.");
-                        trainNeuralNetwork();
-                    }
+                    const combined = fullHistory.timestamps
+                        .map((ts, i) => ({ timestamp: ts, price: fullHistory.prices[i] }))
+                        .sort((a, b) => a.timestamp - b.timestamp);
+                    fullHistory.timestamps = combined.map(d => d.timestamp);
+                    fullHistory.prices = combined.map(d => d.price);
                 }
-
-                // 4. Actualizar siempre la predicción y el precio en la UI
-                redrawPrediction();
-                priceChart.update();
 
                 currentPriceEl.textContent = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(newPrice);
                 currentPriceContainer.classList.remove('hidden');
+
+                renderChart();
 
                 if (saveData) {
                     saveDataToLocalStorage();
@@ -281,66 +323,48 @@
                     return;
                 }
                 const url = `https://api.etherscan.io/api?module=stats&action=ethprice&apikey=${apiKey}`;
-                console.log("Realizando fetch a la URL:", url);
                 statusMessage.textContent = 'Actualizando precio...';
-                statusMessage.className = 'text-center text-blue-400 mb-6';
                 try {
                     const response = await fetch(url);
                     if (!response.ok) {
                         throw new Error(`Error de red: ${response.status} ${response.statusText}`);
                     }
                     const data = await response.json();
-                    console.log("Respuesta de la API recibida:", JSON.stringify(data, null, 2));
-
                     if (data.status === "1") {
                         const { ethusd, ethusd_timestamp } = data.result;
                         updateChart(parseInt(ethusd_timestamp, 10), parseFloat(ethusd));
+                        statusMessage.textContent = `Última actualización: ${new Date().toLocaleTimeString('es-MX')}`;
                     } else {
                         throw new Error(data.result || data.message || 'Error desconocido de la API de Etherscan');
                     }
                 } catch (error) {
                     console.error("Error en fetchPrice:", error);
                     statusMessage.textContent = `Error: ${error.message}. Revisa la conexión o posible bloqueo de CORS.`;
-                    statusMessage.className = 'text-center text-red-400 mb-6';
                     if (fetchInterval) clearInterval(fetchInterval);
                 }
             };
 
             startButton.addEventListener('click', () => {
-                console.log("Botón 'Iniciar' presionado.");
                 const key = apiKeyInput.value.trim();
-                console.log("API Key leída del input:", `'${key}'`);
-
                 if (key) {
-                    console.log("API Key válida. Iniciando proceso...");
                     apiKey = key;
                     document.getElementById('api-setup').style.display = 'none';
-                    if (fetchInterval) {
-                        console.log("Limpiando intervalo anterior.");
-                        clearInterval(fetchInterval);
-                    }
-                    console.log("Limpiando datos de sesión anterior (localStorage, gráfica, historial).");
+                    if (fetchInterval) clearInterval(fetchInterval);
                     localStorage.removeItem('ethPriceTrackerData');
                     priceChart.data.labels = [];
                     priceChart.data.datasets.forEach(dataset => dataset.data = []);
-                    history = { timestamps: [], prices: [] };
+                    fullHistory = { timestamps: [], prices: [] };
                     isNetTrained = false;
                     priceChart.update();
                     saveDataToLocalStorage();
-                    console.log("Llamando a fetchPrice() por primera vez.");
                     fetchPrice();
-                    console.log("Configurando intervalo de actualización cada 2 minutos.");
                     fetchInterval = setInterval(fetchPrice, 120000);
                 } else {
-                    console.log("Error: La API Key está vacía.");
                     statusMessage.textContent = 'Por favor, introduce una API Key válida.';
-                    statusMessage.className = 'text-center text-red-400 mb-6';
                 }
             });
 
-            // **NUEVO: Lógica de Exportación**
             exportButton.addEventListener('click', () => {
-                console.log("Exportando datos...");
                 const dataStr = localStorage.getItem('ethPriceTrackerData');
                 if (!dataStr) {
                     alert("No hay datos para exportar.");
@@ -355,10 +379,8 @@
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
-                console.log("Archivo de exportación generado.");
             });
 
-            // **NUEVO: Lógica de Importación**
             importButton.addEventListener('click', () => {
                 fileImporter.click();
             });
@@ -366,66 +388,59 @@
             fileImporter.addEventListener('change', (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
-
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     try {
                         const importedData = JSON.parse(e.target.result);
-                        console.log("Datos importados:", importedData);
-
                         if (!importedData.history || !importedData.history.timestamps || !importedData.history.prices) {
                             throw new Error("El archivo no tiene el formato correcto.");
                         }
 
-                        // **Lógica de Fusión (Merge)**
                         let newPointsAdded = 0;
                         const importedHistory = importedData.history;
 
                         importedHistory.timestamps.forEach((timestamp, index) => {
-                            if (!history.timestamps.includes(timestamp)) {
-                                history.timestamps.push(timestamp);
-                                history.prices.push(importedHistory.prices[index]);
+                            if (!fullHistory.timestamps.includes(timestamp)) {
+                                fullHistory.timestamps.push(timestamp);
+                                fullHistory.prices.push(importedHistory.prices[index]);
                                 newPointsAdded++;
                             }
                         });
 
                         if (newPointsAdded > 0) {
-                            console.log(`${newPointsAdded} nuevos puntos de datos fusionados.`);
-
-                            // Ordenar los datos combinados por timestamp para mantener el orden cronológico
-                            const combined = history.timestamps
-                                .map((ts, i) => ({ timestamp: ts, price: history.prices[i] }))
+                            const combined = fullHistory.timestamps
+                                .map((ts, i) => ({ timestamp: ts, price: fullHistory.prices[i] }))
                                 .sort((a, b) => a.timestamp - b.timestamp);
+                            fullHistory.timestamps = combined.map(d => d.timestamp);
+                            fullHistory.prices = combined.map(d => d.price);
 
-                            history.timestamps = combined.map(d => d.timestamp);
-                            history.prices = combined.map(d => d.price);
-
-                            // Actualizar la gráfica con los datos fusionados y ordenados
-                            priceChart.data.labels = history.timestamps.map(ts => new Date(ts * 1000).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }));
-                            priceChart.data.datasets[0].data = history.prices;
-                            priceChart.update();
-
-                            // Guardar el nuevo historial y re-entrenar la red
                             saveDataToLocalStorage();
-                            trainNeuralNetwork();
+                            renderChart();
                             statusMessage.textContent = `${newPointsAdded} puntos de datos importados y fusionados correctamente.`;
                         } else {
-                            console.log("No se encontraron nuevos datos para fusionar.");
                             statusMessage.textContent = "Los datos importados ya existían en el historial actual.";
                         }
-
                     } catch (error) {
-                        console.error("Error al importar el archivo:", error);
                         alert(`Error al procesar el archivo: ${error.message}`);
                     } finally {
-                        // Resetear el input para poder importar el mismo archivo de nuevo si es necesario
                         event.target.value = '';
                     }
                 };
                 reader.readAsText(file);
             });
 
-            console.log("DOM cargado. Iniciando aplicación.");
+            filterControls.addEventListener('click', (event) => {
+                if (event.target.tagName === 'BUTTON') {
+                    const filter = event.target.dataset.filter;
+                    if (filter !== currentFilter) {
+                        currentFilter = filter;
+                        filterControls.querySelector('.active-filter').classList.remove('active-filter');
+                        event.target.classList.add('active-filter');
+                        renderChart();
+                    }
+                }
+            });
+
             initializeChart();
             loadDataFromLocalStorage();
         });
