@@ -153,9 +153,9 @@
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 p-4 sm:p-6" id="stat-cards-container"></div>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 p-4 sm:p-6" id="charts-container">
-                    <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Historial de Saldo</h3><canvas id="balanceHistoryChart"></canvas></div>
-                    <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Gastos por Categoría</h3><canvas id="expensesByCategoryChart"></canvas></div>
-                    <div id="expensesByAccountChartContainer" class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Gastos por Cuenta</h3><canvas id="expensesByAccountChart"></canvas></div>
+                    <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg flex flex-col"><h3 class="font-bold text-lg mb-4 flex-shrink-0">Historial de Saldo</h3><div class="relative h-72 w-full"><canvas id="balanceHistoryChart"></canvas></div></div>
+                    <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg flex flex-col"><h3 class="font-bold text-lg mb-4 flex-shrink-0">Gastos por Categoría</h3><div class="relative h-72 w-full"><canvas id="expensesByCategoryChart"></canvas></div></div>
+                    <div id="expensesByAccountChartContainer" class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg flex flex-col"><h3 class="font-bold text-lg mb-4 flex-shrink-0">Gastos por Cuenta</h3><div class="relative h-72 w-full"><canvas id="expensesByAccountChart"></canvas></div></div>
                 </div>
                 <div class="p-4 sm:p-6">
                     <div class="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-lg">
@@ -303,7 +303,7 @@
             });
             if(charts.balanceHistory) charts.balanceHistory.destroy();
             if (data.length === 0) { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); return; }
-            charts.balanceHistory = new Chart(ctx, { type: 'line', data: { labels: data.map(d => d.date), datasets: [{ label: 'Saldo', data: data.map(d => d.balance), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.3 }] } });
+            charts.balanceHistory = new Chart(ctx, { type: 'line', data: { labels: data.map(d => d.date), datasets: [{ label: 'Saldo', data: data.map(d => d.balance), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.3 }] }, options: { responsive: true, maintainAspectRatio: false } });
         }
         function updateExpensesByCategory(transactions) {
              const ctx = document.getElementById('expensesByCategoryChart')?.getContext('2d');
@@ -341,7 +341,8 @@
 
                 if (target.matches('.account-filter-btn')) {
                     state.selectedAccountId = target.dataset.id;
-                    render();
+                    updateDashboardData();
+                    lucide.createIcons();
                 }
                 else if (target.matches('.delete-transaction-btn')) {
                     const id = target.dataset.id;
