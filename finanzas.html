@@ -116,7 +116,6 @@
                 currentView: 'dashboard',
             };
             state = data ? JSON.parse(data) : defaultState;
-            // Asegurarse de que las fechas sean objetos Date
             state.transactions = state.transactions.map(t => ({...t, date: new Date(t.date) }));
         }
 
@@ -131,47 +130,32 @@
             render();
         });
 
-        // --- Renderizado Principal ---
+        // --- Renderizado Principal (Controlador) ---
         function render() {
-            // Guarda el estado actual antes de cada renderizado.
-            saveState();
+            saveState(); // Guarda el estado en cada cambio
 
-            if (state.currentView === 'dashboard') {
+            const currentView = state.currentView;
+            if (currentView === 'dashboard') {
                 renderDashboard();
-            } else if (state.currentView === 'accounts') {
-                renderManagementView('accounts', state.accounts);
-            } else if (state.currentView === 'categories') {
-                renderManagementView('categories', state.categories);
+            } else if (currentView === 'accounts') {
+                renderManagementView('accounts');
+            } else if (currentView === 'categories') {
+                renderManagementView('categories');
             }
-            lucide.createIcons(); // Actualizar iconos
+            lucide.createIcons(); // Refresca los iconos SVG
         }
         
-        // --- Renderizado de Vistas ---
+        // --- Renderizado de Vistas (Plantillas) ---
         function renderDashboard() {
-            const filteredTransactions = state.selectedAccountId === 'all'
-                ? state.transactions
-                : state.transactions.filter(t => t.accountId === state.selectedAccountId);
-
-            const { totalIncome, totalExpenses } = filteredTransactions.reduce((acc, t) => {
-                if (t.type === 'income') acc.totalIncome += t.amount;
-                else acc.totalExpenses += t.amount;
-                return acc;
-            }, { totalIncome: 0, totalExpenses: 0 });
-            const balance = totalIncome - totalExpenses;
-            
             viewContainer.innerHTML = `
                 <div class="px-4 sm:px-6 pt-4">
                     <div id="account-filters" class="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar"></div>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 p-4 sm:p-6">
-                    ${StatCardHTML('Saldo', balance, balance >= 0 ? 'text-green-500' : 'text-red-500', 'landmark')}
-                    ${StatCardHTML('Ingresos', totalIncome, 'text-green-500', 'trending-up')}
-                    ${StatCardHTML('Gastos', totalExpenses, 'text-red-500', 'trending-down')}
-                </div>
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 p-4 sm:p-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 p-4 sm:p-6" id="stat-cards-container"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 p-4 sm:p-6" id="charts-container">
                     <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Historial de Saldo</h3><canvas id="balanceHistoryChart"></canvas></div>
                     <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Gastos por Categoría</h3><canvas id="expensesByCategoryChart"></canvas></div>
-                    ${state.selectedAccountId === 'all' ? `<div class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Gastos por Cuenta</h3><canvas id="expensesByAccountChart"></canvas></div>` : ''}
+                    <div id="expensesByAccountChartContainer" class="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg"><h3 class="font-bold text-lg mb-4">Gastos por Cuenta</h3><canvas id="expensesByAccountChart"></canvas></div>
                 </div>
                 <div class="p-4 sm:p-6">
                     <div class="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-lg">
@@ -180,13 +164,10 @@
                     </div>
                 </div>
             `;
-            
-            renderAccountFilters();
-            renderTransactionList(filteredTransactions);
-            renderCharts(filteredTransactions);
+            updateDashboardData();
         }
-
-        function renderManagementView(type, items) {
+        
+        function renderManagementView(type) {
              viewContainer.innerHTML = `
                 <div class="p-4 sm:p-6 space-y-4">
                     <div class="flex items-center gap-4 mb-4">
@@ -204,8 +185,38 @@
                     </div>
                 </div>
             `;
-            document.getElementById('back-to-dashboard').addEventListener('click', () => { state.currentView = 'dashboard'; render(); });
+            updateManagementData(type);
+        }
+        
+        // --- Actualización de Datos (Más eficiente) ---
+        function updateDashboardData() {
+            const filteredTransactions = state.selectedAccountId === 'all'
+                ? state.transactions
+                : state.transactions.filter(t => t.accountId === state.selectedAccountId);
+
+            const { totalIncome, totalExpenses } = filteredTransactions.reduce((acc, t) => {
+                if (t.type === 'income') acc.totalIncome += t.amount;
+                else acc.totalExpenses += t.amount;
+                return acc;
+            }, { totalIncome: 0, totalExpenses: 0 });
+            const balance = totalIncome - totalExpenses;
             
+            // Actualiza tarjetas de resumen
+            const statsContainer = document.getElementById('stat-cards-container');
+            statsContainer.innerHTML = `
+                ${StatCardHTML('Saldo', balance, balance >= 0 ? 'text-green-500' : 'text-red-500', 'landmark')}
+                ${StatCardHTML('Ingresos', totalIncome, 'text-green-500', 'trending-up')}
+                ${StatCardHTML('Gastos', totalExpenses, 'text-red-500', 'trending-down')}
+            `;
+
+            // Actualiza filtros, lista y gráficos
+            updateAccountFilters();
+            updateTransactionList(filteredTransactions);
+            updateCharts(filteredTransactions);
+        }
+
+        function updateManagementData(type) {
+            const items = state[type];
             const itemList = document.getElementById('item-list');
             itemList.innerHTML = items.length > 0 ? items.map(item => `
                 <li key="${item.id}" class="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
@@ -214,19 +225,18 @@
                 </li>
             `).join('') : `<p class="text-center text-slate-400 py-8">No has añadido ningún elemento.</p>`;
 
-            // **LA CORRECCIÓN ESTÁ AQUÍ**
-            // Se añade el event listener DESPUÉS de crear el formulario.
             document.getElementById('item-form').addEventListener('submit', (e) => {
                 e.preventDefault();
                 const nameInput = document.getElementById('item-name');
                 if (nameInput && nameInput.value) {
                     state[type].push({ id: crypto.randomUUID(), name: nameInput.value });
                     nameInput.value = '';
-                    render(); // Re-renderiza la vista para mostrar el nuevo elemento
+                    render();
                 }
             });
+            lucide.createIcons();
         }
-        
+
         // --- Lógica de Componentes HTML ---
         function StatCardHTML(title, value, colorClass, icon) {
              return `
@@ -242,7 +252,7 @@
             `;
         }
 
-        function renderAccountFilters() {
+        function updateAccountFilters() {
              const container = document.getElementById('account-filters');
             let buttonsHTML = `<button data-id="all" class="account-filter-btn flex-shrink-0 px-4 py-2 rounded-full text-sm font-semibold transition-all ${state.selectedAccountId === 'all' ? 'bg-blue-600 text-white shadow' : 'bg-white dark:bg-slate-700'}">Todas</button>`;
             state.accounts.forEach(account => {
@@ -251,7 +261,7 @@
             container.innerHTML = buttonsHTML;
         }
         
-        function renderTransactionList(transactions) {
+        function updateTransactionList(transactions) {
             const list = document.getElementById('transaction-list');
             const sorted = [...transactions].sort((a, b) => new Date(b.date) - new Date(a.date));
             if (sorted.length === 0) { list.innerHTML = `<p class="text-center text-slate-400 py-8">No hay transacciones para esta vista.</p>`; return; }
@@ -277,14 +287,12 @@
         }
 
         // --- Lógica de Gráficos ---
-        function renderCharts(transactions) {
-             renderBalanceHistory(transactions);
-            renderExpensesByCategory(transactions);
-            if (state.selectedAccountId === 'all') {
-                renderExpensesByAccount(transactions);
-            }
+        function updateCharts(transactions) {
+            updateBalanceHistory(transactions);
+            updateExpensesByCategory(transactions);
+            updateExpensesByAccount(transactions);
         }
-        function renderBalanceHistory(transactions) {
+        function updateBalanceHistory(transactions) {
              const ctx = document.getElementById('balanceHistoryChart')?.getContext('2d');
             if (!ctx) return;
             const sorted = [...transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -297,7 +305,7 @@
             if (data.length === 0) { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); return; }
             charts.balanceHistory = new Chart(ctx, { type: 'line', data: { labels: data.map(d => d.date), datasets: [{ label: 'Saldo', data: data.map(d => d.balance), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.3 }] } });
         }
-        function renderExpensesByCategory(transactions) {
+        function updateExpensesByCategory(transactions) {
              const ctx = document.getElementById('expensesByCategoryChart')?.getContext('2d');
             if (!ctx) return;
             const data = state.categories.map(cat => ({ name: cat.name, value: transactions.filter(t => t.type === 'expense' && t.categoryId === cat.id).reduce((sum, t) => sum + t.amount, 0) })).filter(item => item.value > 0);
@@ -305,38 +313,53 @@
             if (data.length === 0) { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); return; }
             charts.expensesByCategory = new Chart(ctx, { type: 'pie', data: { labels: data.map(d => d.name), datasets: [{ data: data.map(d => d.value), backgroundColor: COLORS }] }, options: { responsive: true, maintainAspectRatio: false } });
         }
-        function renderExpensesByAccount(transactions) {
+        function updateExpensesByAccount(transactions) {
+             const container = document.getElementById('expensesByAccountChartContainer');
+             if (!container) return;
+             
+             if (state.selectedAccountId !== 'all') {
+                container.style.display = 'none';
+                return;
+             }
+             container.style.display = 'block';
+
              const ctx = document.getElementById('expensesByAccountChart')?.getContext('2d');
-            if (!ctx) return;
+             if (!ctx) return;
+
             const data = state.accounts.map(acc => ({ name: acc.name, value: transactions.filter(t => t.type === 'expense' && t.accountId === acc.id).reduce((sum, t) => sum + t.amount, 0) })).filter(item => item.value > 0);
             if(charts.expensesByAccount) charts.expensesByAccount.destroy();
             if (data.length === 0) { ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); return; }
-            charts.expensesByAccount = new Chart(ctx, { type: 'bar', data: { labels: data.map(d => d.name), datasets: [{ label: 'Gastos por Cuenta', data: data.map(d => d.value), backgroundColor: COLORS }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false } });
+            charts.expensesByAccount = new Chart(ctx, { type: 'bar', data: { labels: data.map(d => d.name), datasets: [{ label: 'Gastos por Cuenta', data: data.map(d => d.value), backgroundColor: COLORS }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } } });
         }
 
         // --- Manejadores de Eventos ---
         function setupEventListeners() {
-            // Clicks en la UI
+            // Clicks en la UI (Delegación de eventos)
             document.body.addEventListener('click', (e) => {
-                // Filtros de cuenta
-                if (e.target.closest('.account-filter-btn')) {
-                    state.selectedAccountId = e.target.closest('.account-filter-btn').dataset.id;
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                if (target.matches('.account-filter-btn')) {
+                    state.selectedAccountId = target.dataset.id;
                     render();
                 }
-                // Eliminar items (transacciones, cuentas, categorías)
-                else if (e.target.closest('.delete-transaction-btn')) {
-                    const id = e.target.closest('.delete-transaction-btn').dataset.id;
+                else if (target.matches('.delete-transaction-btn')) {
+                    const id = target.dataset.id;
                     if(confirm('¿Seguro que quieres eliminar esta transacción?')) {
                         state.transactions = state.transactions.filter(t => t.id !== id);
                         render();
                     }
                 }
-                else if (e.target.closest('.delete-item-btn')) {
-                     const { id, type } = e.target.closest('.delete-item-btn').dataset;
+                else if (target.matches('.delete-item-btn')) {
+                     const { id, type } = target.dataset;
                      if(confirm(`¿Seguro que quieres eliminar este elemento? Las transacciones asociadas no se borrarán pero perderán su referencia.`)) {
                         state[type] = state[type].filter(item => item.id !== id);
                         render();
                     }
+                }
+                else if (target.id === 'back-to-dashboard') {
+                    state.currentView = 'dashboard';
+                    render();
                 }
             });
             
@@ -344,8 +367,8 @@
 
             // Botones de navegación y modales
             const modal = document.getElementById('transaction-modal');
-            document.getElementById('add-transaction-btn-desktop').addEventListener('click', () => openModal());
-            document.getElementById('add-transaction-btn-mobile').addEventListener('click', () => openModal());
+            document.getElementById('add-transaction-btn-desktop').addEventListener('click', openModal);
+            document.getElementById('add-transaction-btn-mobile').addEventListener('click', openModal);
             document.getElementById('close-modal-btn').addEventListener('click', () => modal.classList.add('hidden'));
             document.getElementById('manage-accounts-btn').addEventListener('click', () => { state.currentView = 'accounts'; render(); });
             document.getElementById('manage-categories-btn').addEventListener('click', () => { state.currentView = 'categories'; render(); });
@@ -419,7 +442,6 @@
             reader.onload = function(e) {
                 try {
                     const importedState = JSON.parse(e.target.result);
-                    // Validación simple
                     if (importedState.transactions && importedState.accounts && importedState.categories) {
                         if (confirm('¿Estás seguro de que quieres importar estos datos? Se sobrescribirá toda la información actual.')) {
                             state = importedState;
@@ -434,7 +456,6 @@
                 }
             };
             reader.readAsText(file);
-            // Limpiar el input para poder importar el mismo archivo de nuevo
             event.target.value = null; 
         }
 
