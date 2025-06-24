@@ -1,0 +1,322 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, addDoc, getDocs, onSnapshot, deleteDoc, setDoc, query, where, Timestamp } from 'firebase/firestore';
+import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line } from 'recharts';
+import { Plus, Trash2, Wallet, Tag, TrendingUp, TrendingDown, Landmark, Download, X, ArrowLeft } from 'lucide-react';
+
+// --- Configuración de Firebase ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+// --- Colores para los Gráficos ---
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF', '#FF1943', '#19A2FF', '#FFD700'];
+
+// --- Componentes UI ---
+const StatCard = ({ title, value, icon, colorClass }) => (
+    <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-lg flex items-center justify-between transition-transform duration-300 hover:scale-105">
+        <div>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{title}</p>
+            <p className={`text-2xl sm:text-3xl font-bold ${colorClass}`}>{value.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}</p>
+        </div>
+        <div className={`p-3 rounded-full bg-slate-100 dark:bg-slate-700`}>
+            {icon}
+        </div>
+    </div>
+);
+
+const Modal = ({ isOpen, onClose, title, children }) => {
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex justify-center items-center p-4" onClick={onClose}>
+            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 sm:p-8" onClick={e => e.stopPropagation()}>
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100">{title}</h2>
+                    <button onClick={onClose} className="p-2 rounded-full text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                        <X size={24} />
+                    </button>
+                </div>
+                {children}
+            </div>
+        </div>
+    );
+};
+
+// --- Componente Principal de la Aplicación ---
+export default function App() {
+    // --- Estados ---
+    const [db, setDb] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [transactions, setTransactions] = useState([]);
+    const [accounts, setAccounts] = useState([]);
+    const [categories, setCategories] = useState([]);
+    const [modal, setModal] = useState(null);
+    const [currentView, setCurrentView] = useState('dashboard');
+    const [selectedAccountId, setSelectedAccountId] = useState('all'); // Estado para el filtro de cuenta
+
+    // --- Inicialización de Firebase ---
+    useEffect(() => {
+        try {
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const firestore = getFirestore(app);
+            setDb(firestore);
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                } else {
+                    const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                    if (token) await signInWithCustomToken(auth, token);
+                    else await signInAnonymously(auth);
+                }
+                setLoading(false);
+            });
+        } catch (error) {
+            console.error("Error al inicializar Firebase:", error);
+            setLoading(false);
+        }
+    }, []);
+
+    // --- Listeners de Firestore ---
+    useEffect(() => {
+        if (!db || !userId) return;
+        const collectionsInfo = {
+            transactions: setTransactions,
+            accounts: setAccounts,
+            categories: setCategories,
+        };
+        const unsubscribers = Object.entries(collectionsInfo).map(([col, setter]) => {
+            const q = query(collection(db, `/artifacts/${appId}/users/${userId}/${col}`));
+            return onSnapshot(q, (snapshot) => {
+                const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), date: doc.data().date?.toDate ? doc.data().date.toDate() : new Date() }));
+                setter(items);
+            }, (err) => console.error(`Error al obtener ${col}:`, err));
+        });
+        return () => unsubscribers.forEach(unsub => unsub());
+    }, [db, userId]);
+
+    // --- Filtrado de Transacciones ---
+    const filteredTransactions = useMemo(() => {
+        if (selectedAccountId === 'all') {
+            return transactions;
+        }
+        return transactions.filter(t => t.accountId === selectedAccountId);
+    }, [transactions, selectedAccountId]);
+
+    // --- Cálculos y Memos basados en transacciones filtradas ---
+    const { totalIncome, totalExpenses } = useMemo(() => {
+        return filteredTransactions.reduce((acc, t) => {
+            if (t.type === 'income') acc.totalIncome += t.amount;
+            else acc.totalExpenses += t.amount;
+            return acc;
+        }, { totalIncome: 0, totalExpenses: 0 });
+    }, [filteredTransactions]);
+
+    const balance = totalIncome - totalExpenses;
+    const sortedTransactions = useMemo(() => [...filteredTransactions].sort((a, b) => b.date - a.date), [filteredTransactions]);
+
+    const expensesByCategory = useMemo(() => {
+        return categories.map(cat => ({
+            name: cat.name,
+            value: filteredTransactions.filter(t => t.type === 'expense' && t.categoryId === cat.id).reduce((sum, t) => sum + t.amount, 0)
+        })).filter(item => item.value > 0);
+    }, [filteredTransactions, categories]);
+
+    const expensesByAccount = useMemo(() => {
+        return accounts.map(acc => ({
+            name: acc.name,
+            value: filteredTransactions.filter(t => t.type === 'expense' && t.accountId === acc.id).reduce((sum, t) => sum + t.amount, 0)
+        })).filter(item => item.value > 0);
+    }, [filteredTransactions, accounts]);
+
+    const balanceHistory = useMemo(() => {
+        if (filteredTransactions.length === 0) return [];
+        const sorted = [...filteredTransactions].sort((a, b) => a.date - b.date);
+        let cumulativeBalance = 0;
+        return sorted.map(t => {
+            cumulativeBalance += t.type === 'income' ? t.amount : -t.amount;
+            return { date: t.date.toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }), balance: cumulativeBalance };
+        });
+    }, [filteredTransactions]);
+
+    // --- Manejadores de Datos ---
+    const handleAddItem = async (collectionName, data) => {
+        if (!db || !userId) return;
+        try {
+            await addDoc(collection(db, `/artifacts/${appId}/users/${userId}/${collectionName}`), data);
+            setModal(null);
+        } catch (error) {
+            console.error(`Error al añadir en ${collectionName}:`, error);
+        }
+    };
+
+    const handleDeleteItem = async (collectionName, id) => {
+        if (!db || !userId) return;
+        try {
+            await deleteDoc(doc(db, `/artifacts/${appId}/users/${userId}/${collectionName}`, id));
+        } catch (error) {
+            console.error(`Error al eliminar en ${collectionName}:`, error);
+        }
+    };
+    
+    // --- Formularios ---
+    const TransactionForm = () => {
+        const [type, setType] = useState('expense');
+        const [amount, setAmount] = useState('');
+        const [description, setDescription] = useState('');
+        const [categoryId, setCategoryId] = useState('');
+        const [accountId, setAccountId] = useState('');
+        const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (!amount || !description || !categoryId || !accountId || !date) return;
+            handleAddItem('transactions', { type, amount: parseFloat(amount), description, categoryId, accountId, date: Timestamp.fromDate(new Date(date)) });
+        };
+
+        return (
+            <form onSubmit={handleSubmit} className="space-y-4">
+                 <div className="grid grid-cols-2 gap-4">
+                    <button type="button" onClick={() => setType('expense')} className={`p-3 rounded-lg text-center font-semibold transition-all ${type === 'expense' ? 'bg-red-500 text-white shadow-md' : 'bg-slate-200 dark:bg-slate-700'}`}>Gasto</button>
+                    <button type="button" onClick={() => setType('income')} className={`p-3 rounded-lg text-center font-semibold transition-all ${type === 'income' ? 'bg-green-500 text-white shadow-md' : 'bg-slate-200 dark:bg-slate-700'}`}>Ingreso</button>
+                </div>
+                <input type="number" placeholder="Monto" value={amount} onChange={e => setAmount(e.target.value)} className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required />
+                <input type="text" placeholder="Descripción" value={description} onChange={e => setDescription(e.target.value)} className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required />
+                <select value={categoryId} onChange={e => setCategoryId(e.target.value)} className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required>
+                    <option value="">Selecciona Categoría</option>
+                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <select value={accountId} onChange={e => setAccountId(e.target.value)} className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required>
+                    <option value="">Selecciona Cuenta</option>
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required />
+                <button type="submit" className="w-full p-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-lg">Añadir Transacción</button>
+            </form>
+        );
+    };
+
+    const ItemForm = ({ type }) => {
+        const [name, setName] = useState('');
+        const handleSubmit = (e) => { e.preventDefault(); if (!name) return; handleAddItem(type, { name }); setName(''); };
+        return (
+            <form onSubmit={handleSubmit} className="flex gap-2">
+                <input type="text" placeholder={`Nombre de ${type === 'accounts' ? 'la cuenta' : 'la categoría'}`} value={name} onChange={e => setName(e.target.value)} className="flex-grow p-3 bg-slate-100 dark:bg-slate-700 rounded-lg" required />
+                <button type="submit" className="p-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"><Plus size={24}/></button>
+            </form>
+        );
+    };
+    
+    // --- Vistas ---
+    const ManagementView = ({ type, items, onDelete }) => (
+        <div className="p-4 sm:p-6 space-y-4">
+             <div className="flex items-center gap-4 mb-4">
+                <button onClick={() => setCurrentView('dashboard')} className="p-2 rounded-full text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"><ArrowLeft size={24} /></button>
+                <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Gestionar {type === 'accounts' ? 'Cuentas' : 'Categorías'}</h2>
+            </div>
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+                <ItemForm type={type} />
+                <ul className="mt-4 space-y-2">
+                    {items.map(item => (
+                        <li key={item.id} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
+                            <span className="font-medium">{item.name}</span>
+                            <button onClick={() => onDelete(type, item.id)} className="text-red-500 hover:text-red-700 p-1"><Trash2 size={18} /></button>
+                        </li>
+                    ))}
+                    {items.length === 0 && <p className="text-center text-slate-400 py-8">No has añadido ningún elemento.</p>}
+                </ul>
+            </div>
+        </div>
+    );
+    
+    const DashboardView = () => (
+        <>
+            {/* --- Filtro por Cuentas --- */}
+            <div className="px-4 sm:px-6 pt-4">
+                 <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+                    <button onClick={() => setSelectedAccountId('all')} className={`flex-shrink-0 px-4 py-2 rounded-full text-sm font-semibold transition-all ${selectedAccountId === 'all' ? 'bg-blue-600 text-white shadow' : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200'}`}>
+                        Todas
+                    </button>
+                    {accounts.map(account => (
+                        <button key={account.id} onClick={() => setSelectedAccountId(account.id)} className={`flex-shrink-0 px-4 py-2 rounded-full text-sm font-semibold transition-all ${selectedAccountId === account.id ? 'bg-blue-600 text-white shadow' : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200'}`}>
+                            {account.name}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 p-4 sm:p-6">
+                <StatCard title="Saldo" value={balance} colorClass={balance >= 0 ? 'text-green-500' : 'text-red-500'} icon={<Landmark size={24} className="text-blue-500"/>} />
+                <StatCard title="Ingresos" value={totalIncome} colorClass="text-green-500" icon={<TrendingUp size={24} className="text-green-500"/>}/>
+                <StatCard title="Gastos" value={totalExpenses} colorClass="text-red-500" icon={<TrendingDown size={24} className="text-red-500"/>} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 p-4 sm:p-6">
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+                    <h3 className="font-bold text-lg mb-4">Historial de Saldo</h3>
+                    {balanceHistory.length > 0 ? <ResponsiveContainer width="100%" height={300}><LineChart data={balanceHistory}><CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} /><XAxis dataKey="date" stroke="#94a3b8"/><YAxis stroke="#94a3b8" tickFormatter={(v) => v.toLocaleString('es-MX')}/><Tooltip formatter={(v) => v.toLocaleString('es-MX', {style: 'currency', currency: 'MXN'})} contentStyle={{backgroundColor: 'rgba(30, 41, 59, 0.8)', borderColor: '#334155', borderRadius: '0.75rem' }}/><Line type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={2} dot={{r:4}} activeDot={{r:8}} /></LineChart></ResponsiveContainer> : <div className="h-[300px] flex items-center justify-center text-slate-400">No hay datos.</div>}
+                </div>
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+                    <h3 className="font-bold text-lg mb-4">Gastos por Categoría</h3>
+                    {expensesByCategory.length > 0 ? <ResponsiveContainer width="100%" height={300}><PieChart><Pie data={expensesByCategory} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label>{expensesByCategory.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip formatter={(v) => v.toLocaleString('es-MX', {style: 'currency', currency: 'MXN'})}/><Legend /></PieChart></ResponsiveContainer> : <div className="h-[300px] flex items-center justify-center text-slate-400">No hay gastos.</div>}
+                </div>
+                {selectedAccountId === 'all' && <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+                    <h3 className="font-bold text-lg mb-4">Gastos por Cuenta</h3>
+                    {expensesByAccount.length > 0 ? <ResponsiveContainer width="100%" height={300}><BarChart data={expensesByAccount} layout="vertical" margin={{top: 5, right: 30, left: 60, bottom: 5}}><CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} /><XAxis type="number" stroke="#94a3b8" tickFormatter={(v) => v.toLocaleString('es-MX')} /><YAxis type="category" dataKey="name" width={100} stroke="#94a3b8" /><Tooltip formatter={(v) => v.toLocaleString('es-MX', {style: 'currency', currency: 'MXN'})}/><Bar dataKey="value">{expensesByAccount.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />)}</Bar></BarChart></ResponsiveContainer> : <div className="h-[300px] flex items-center justify-center text-slate-400">No hay gastos.</div>}
+                </div>}
+            </div>
+
+            <div className="p-4 sm:p-6">
+                <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-lg">
+                    <h3 className="font-bold text-lg mb-4">Transacciones Recientes</h3>
+                    <ul className="space-y-3">
+                        {sortedTransactions.slice(0, 10).map(t => (
+                            <li key={t.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                                <div className="flex items-center gap-4">
+                                     <div className={`p-2 rounded-full ${t.type === 'income' ? 'bg-green-100 dark:bg-green-900/50' : 'bg-red-100 dark:bg-red-900/50'}`}>{t.type === 'income' ? <TrendingUp className="text-green-500" size={20}/> : <TrendingDown className="text-red-500" size={20}/>}</div>
+                                     <div>
+                                        <p className="font-semibold">{t.description}</p>
+                                        <p className="text-xs text-slate-500 dark:text-slate-400">{t.date.toLocaleDateString('es-MX')} &bull; {accounts.find(a=>a.id === t.accountId)?.name || 'N/A'}</p>
+                                     </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <p className={`font-bold ${t.type === 'income' ? 'text-green-500' : 'text-red-500'}`}>{t.type === 'income' ? '+' : '-'} {t.amount.toLocaleString('es-MX', {style: 'currency', currency: 'MXN' })}</p>
+                                    <button onClick={() => handleDeleteItem('transactions', t.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={16}/></button>
+                                </div>
+                            </li>
+                        ))}
+                         {filteredTransactions.length === 0 && <p className="text-center text-slate-400 py-8">No hay transacciones para esta cuenta.</p>}
+                    </ul>
+                </div>
+            </div>
+        </>
+    );
+
+    const renderContent = () => {
+        switch (currentView) {
+            case 'accounts': return <ManagementView type="accounts" items={accounts} onDelete={handleDeleteItem} />;
+            case 'categories': return <ManagementView type="categories" items={categories} onDelete={handleDeleteItem} />;
+            default: return <DashboardView />;
+        }
+    };
+    
+    return (
+        <div className="bg-slate-100 dark:bg-slate-900 min-h-screen text-slate-800 dark:text-slate-200 font-sans">
+            <style>{`.no-scrollbar::-webkit-scrollbar { display: none; } .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
+            <header className="bg-white dark:bg-slate-800/50 backdrop-blur-sm sticky top-0 z-40 shadow-sm p-4 flex justify-between items-center">
+                 <h1 className="text-xl sm:text-2xl font-bold text-blue-600 dark:text-blue-400">Control Financiero</h1>
+                 <div className="flex items-center gap-2">
+                    <button onClick={() => setModal('transaction')} className="hidden sm:flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 shadow-md"><Plus size={20}/> Añadir</button>
+                    <button onClick={() => setCurrentView('accounts')} className="p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700" title="Gestionar Cuentas"><Wallet size={22}/></button>
+                    <button onClick={() => setCurrentView('categories')} className="p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700" title="Gestionar Categorías"><Tag size={22}/></button>
+                </div>
+            </header>
+            
+            <main>{loading ? <div className="text-center p-10">Cargando...</div> : renderContent()}</main>
+
+            <button onClick={() => setModal('transaction')} className="sm:hidden fixed bottom-6 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg" aria-label="Añadir Transacción"><Plus size={28} /></button>
+            <Modal isOpen={modal === 'transaction'} onClose={() => setModal(null)} title="Añadir Transacción"><TransactionForm /></Modal>
+        </div>
+    );
+}
